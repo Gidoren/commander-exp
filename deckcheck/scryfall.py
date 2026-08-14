@@ -1,7 +1,12 @@
-"""Scryfall bulk data loading. Complete. Offline after the first fetch."""
+"""Scryfall bulk data loading. Offline after the first fetch.
+
+Scryfall requires clients to send a descriptive User-Agent and an Accept
+header; requests without them are rejected with HTTP 400.
+"""
 
 from __future__ import annotations
 
+import gzip
 import json
 import urllib.request
 from pathlib import Path
@@ -11,16 +16,49 @@ from .models import Card
 BULK_INDEX = "https://api.scryfall.com/bulk-data"
 DATA = Path(__file__).resolve().parent.parent / "data" / "scryfall.json"
 
+# Identify yourself here. Scryfall asks that clients do, and rejects the
+# default urllib agent outright.
+HEADERS = {
+    "User-Agent": "deckcheck/0.1 (https://github.com/Gidoren/commander-exp)",
+    "Accept": "application/json",
+}
 
-def fetch(dest: Path = DATA) -> Path:
-    """Download the default_cards bulk file once. Run via `make data`."""
+
+def _open(url: str, timeout: int = 120):
+    """Open a URL with the headers Scryfall requires."""
+    return urllib.request.urlopen(
+        urllib.request.Request(url, headers=HEADERS), timeout=timeout
+    )
+
+
+def fetch(dest: Path = DATA, *, force: bool = False) -> Path:
+    """Download the default_cards bulk file once. Run via `make data`.
+
+    Scryfall serves bulk data as gzip-compressed JSONL; this decompresses
+    it and writes a plain JSON array to `dest`, so CardDB.load can read it
+    directly. Writes to a .part file and renames on completion, so an
+    interrupted download is not mistaken for a finished one on the next run.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
+    if dest.exists() and not force:
         return dest
-    with urllib.request.urlopen(BULK_INDEX) as r:
+
+    with _open(BULK_INDEX) as r:
         entries = json.load(r)["data"]
-    url = next(e["download_uri"] for e in entries if e["type"] == "default_cards")
-    urllib.request.urlretrieve(url, dest)
+    entry = next(e for e in entries if e["type"] == "default_cards")
+    url, size = entry["jsonl_download_uri"], entry.get("compressed_size", 0)
+    print(f"downloading default_cards ({size / 1e6:.0f} MB compressed)")
+
+    with _open(url, timeout=600) as r, gzip.GzipFile(fileobj=r) as gz:
+        cards = [json.loads(line) for line in gz]
+
+    if len(cards) < 10_000:
+        raise RuntimeError(f"download truncated; got only {len(cards)} cards")
+
+    tmp = dest.with_suffix(".part")
+    tmp.write_text(json.dumps(cards))
+    tmp.replace(dest)
+    print(f"wrote {dest} ({dest.stat().st_size / 1e6:.0f} MB)")
     return dest
 
 
@@ -64,6 +102,8 @@ class CardDB:
 
     @classmethod
     def load(cls, path: Path = DATA) -> "CardDB":
+        if not path.exists():
+            raise FileNotFoundError(f"{path} missing - run `make data` first")
         raw = json.loads(path.read_text())
         keep = [r for r in raw if r.get("lang") == "en" and not r.get("digital")]
         return cls([_to_card(r) for r in keep])
