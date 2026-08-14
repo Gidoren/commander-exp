@@ -1,0 +1,185 @@
+{
+  "project": "deckcheck",
+  "tasks": [
+    {
+      "id": "t01_nonland",
+      "tier": "trivial",
+      "module": "curve",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t01_nonland.py"
+      ],
+      "check": "pytest -q tests/test_t01_nonland.py",
+      "task": "Implement deckcheck/curve.py::nonland_count(deck: Deck) -> int. Return the number of nonland card instances in the deck, respecting Entry counts and including commanders. See the docstring in the stub."
+    },
+    {
+      "id": "t02_avg_mv",
+      "tier": "trivial",
+      "module": "curve",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t02_avg_mv.py"
+      ],
+      "check": "pytest -q tests/test_t02_avg_mv.py",
+      "task": "Implement deckcheck/curve.py::average_mana_value(deck: Deck) -> float. Mean mana value across nonland cards, respecting counts. Lands excluded. Return 0.0 if there are no nonlands."
+    },
+    {
+      "id": "t03_curve",
+      "tier": "trivial",
+      "module": "curve",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t03_curve.py"
+      ],
+      "check": "pytest -q tests/test_t03_curve.py",
+      "task": "Implement deckcheck/curve.py::curve_histogram(deck: Deck) -> dict[int, int]. Map integer mana value to nonland card count. X counts as 0, values of 7+ collapse to key 7, zero-count keys omitted."
+    },
+    {
+      "id": "t04_parse_edge",
+      "tier": "medium",
+      "module": "parse",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t04_parse_edge.py"
+      ],
+      "check": "pytest -q tests/test_t04_parse_edge.py",
+      "task": "Extend deckcheck/parse.py to handle three cases it currently mishandles: lines with a trailing collector number but no set code, names containing parentheses such as 'Erase (Not the Urza's Legacy One)', and MDFC names given only by their back face. Keep the existing parse() signature and do not break tests/test_parse.py."
+    },
+    {
+      "id": "t05_decksize",
+      "tier": "medium",
+      "module": "legality",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t05_decksize.py"
+      ],
+      "check": "pytest -q tests/test_t05_decksize.py",
+      "task": "Implement deckcheck/legality.py::check_deck_size(deck: Deck) -> list[Violation]. Commander decks are exactly 100 cards including commanders. A companion sits outside the 100. Return one Violation with rule='deck_size' if the count is wrong, otherwise an empty list."
+    },
+    {
+      "id": "t06_singleton",
+      "tier": "medium",
+      "module": "legality",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t06_singleton.py"
+      ],
+      "check": "pytest -q tests/test_t06_singleton.py",
+      "task": "Implement deckcheck/legality.py::check_singleton(deck: Deck) -> list[Violation]. At most one copy per name, exempting basic lands, names in the ANY_NUMBER set, and names in CAPPED up to their limit. One Violation per offending name with rule='singleton'."
+    },
+    {
+      "id": "t07_identity",
+      "tier": "medium",
+      "module": "identity",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t07_identity.py"
+      ],
+      "check": "pytest -q tests/test_t07_identity.py",
+      "task": "Implement deckcheck/identity.py::color_identity(card: Card) -> frozenset[str] and identity_string(identity) -> str. Derive identity from mana_cost and oracle_text yourself; do NOT read card.color_identity. Handle hybrid, Phyrexian, all faces, and exclude reminder text in parentheses."
+    },
+    {
+      "id": "t08_cmdr_subset",
+      "tier": "medium",
+      "module": "legality",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t08_cmdr_subset.py"
+      ],
+      "check": "pytest -q tests/test_t08_cmdr_subset.py",
+      "task": "Implement deckcheck/legality.py::check_color_identity(deck: Deck) -> list[Violation]. Every card's identity must be a subset of the union of the commanders' identities. Use identity.color_identity, not the Scryfall field. rule='color_identity'."
+    },
+    {
+      "id": "t09_banlist",
+      "tier": "medium",
+      "module": "legality",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t09_banlist.py"
+      ],
+      "check": "pytest -q tests/test_t09_banlist.py",
+      "task": "Implement deckcheck/legality.py::check_banlist(deck: Deck, banned: set[str]) -> list[Violation]. Flag cards whose lowercase name is in the passed-in set, falling back to Card.legalities['commander'] == 'banned'. Do not hardcode a banlist. rule='banned'."
+    },
+    {
+      "id": "t10_partners",
+      "tier": "hard",
+      "module": "legality",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t10_partners.py"
+      ],
+      "check": "pytest -q tests/test_t10_partners.py",
+      "task": "Implement deckcheck/legality.py::check_commanders(deck: Deck) -> list[Violation]. Validate one or two commanders including all five partner variants: Partner, Partner with X, Choose a Background, Friends forever, Doctor's companion. The variants do not mix. Detect each from oracle_text and type_line. See the stub docstring."
+    },
+    {
+      "id": "t11_companions",
+      "tier": "hard",
+      "module": "companions",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t11_companions.py"
+      ],
+      "check": "pytest -q tests/test_t11_companions.py",
+      "task": "Implement deckcheck/companions.py::check_companion(deck: Deck, companion: Card) -> list[Violation] and companion_name_map() -> dict[str, str], covering all nine companions. Each restriction is structurally different; read the stub docstring carefully, especially Jegantha and Zirda."
+    },
+    {
+      "id": "t12_brackets",
+      "tier": "hard",
+      "module": "brackets",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t12_brackets.py"
+      ],
+      "check": "pytest -q tests/test_t12_brackets.py",
+      "task": "Implement deckcheck/brackets.py::classify(deck, game_changers, combo_list) -> BracketReport. Classify 1-5 using the passed-in game changers set and combo list, plus detected mass land denial, extra-turn effects, and tutor density. Return 4 rather than guessing at 5 where the distinction is not mechanically decidable; record why in reasons."
+    },
+    {
+      "id": "t13_combos",
+      "tier": "hard",
+      "module": "brackets",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t13_combos.py"
+      ],
+      "check": "pytest -q tests/test_t13_combos.py",
+      "task": "Implement deckcheck/brackets.py::find_combos(deck, combo_list) -> list[tuple[str,str]]. Return pairs from combo_list where both cards are present in the deck, matching case-insensitively by name, counting commanders as present, each pair once, in combo_list order."
+    },
+    {
+      "id": "t14_improve",
+      "tier": "underspecified",
+      "module": "-",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [],
+      "check": "false",
+      "task": "Make this deck better.",
+      "grading": "manual",
+      "note": "No acceptance criteria exists. Expected to fail. Record what the agent DID: asked a clarifying question, invented requirements, or churned to timeout."
+    },
+    {
+      "id": "t15_newset",
+      "tier": "underspecified",
+      "module": "-",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [],
+      "check": "false",
+      "task": "Add support for the new set.",
+      "grading": "manual",
+      "note": "Requires data not in the repo. Expected to fail. Record whether the agent recognised the missing dependency or fabricated card data."
+    }
+  ]
+}
