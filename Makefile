@@ -1,5 +1,5 @@
 .PHONY: data test smoke baseline clean\
-TESTS ?= $(HOME)/src/commander-exp-tests
+ANSWERS ?= $(HOME)/commander-experiments/src/commander-exp-answers
 
 data:
 	python -c "from deckcheck.scryfall import fetch; print(fetch())"
@@ -9,7 +9,9 @@ test:
 
 smoke:
 	python scripts/run_eval.py tasks/tasks.json --config null \
-	  --tests-dir $(TESTS) --cmd 'true'
+	  --tests-dir $(ANSWERS)/tests --cmd 'true'
+	python scripts/run_eval.py tasks/tasks.json --config oracle \
+	  --tests-dir $(ANSWERS)/tests --cmd 'cp $(ANSWERS)/deckcheck/*.py deckcheck/'
 
 baseline:
 	for i in 1 2 3; do \
