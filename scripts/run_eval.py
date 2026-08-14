@@ -1,21 +1,25 @@
 """
-run_eval.py - run one agent configuration against the task set.
+run_eval.py - run one agent configuration against the deckcheck task set.
 
-Pass criterion, for `code` tasks, needs no hand-written checker:
-  1. create a worktree at the task's PARENT commit
-  2. let the agent work
-  3. check out the test files FROM THE FIX COMMIT into the worktree
-  4. run the tests
+Hidden tests live OUTSIDE the repository, in a plain directory. They are never
+committed to any branch, because `git worktree add` shares the object store and
+all refs with the parent repo - an agent in a worktree can read any branch via
+`git show`. Keeping the tests out of git entirely is the only airtight version.
 
-Those tests failed before the fix and passed after it, by construction. The
-agent never sees them - they arrive only at grading time - so it cannot cheat
-by editing them.
+    ~/src/commander-exp/          # the repo, main only
+    ~/src/commander-exp-tests/    # test_t01_nonland.py, test_t11_companions.py, ...
 
-`infra` tasks use an explicit `check` command in the manifest instead.
+Grading flow per task:
+    1. worktree at `start_ref`
+    2. agent runs with no access to the tests
+    3. test files copied in from --tests-dir
+    4. `check` runs
 
 Usage:
-    python run_eval.py tasks.json --config baseline \
-        --cmd 'pi -m qwen3.6-27b --yolo "{task}"'
+    python scripts/run_eval.py tasks/tasks.json \
+        --config baseline-1 \
+        --tests-dir ~/src/commander-exp-tests \
+        --cmd 'pi --yolo "{task}"'
 """
 
 from __future__ import annotations
@@ -35,88 +39,127 @@ def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
     )
 
 
-def run_one(repo: Path, task: dict, cmd_tmpl: str, timeout: int) -> dict:
+def preflight(repo: Path, tests_dir: Path, tasks: list[dict]) -> None:
+    """Refuse to run if the tests are reachable from inside the repo."""
+    if tests_dir.resolve().is_relative_to(repo.resolve()):
+        raise SystemExit(f"FATAL: tests-dir {tests_dir} is inside the repo")
+
+    tracked = git(repo, "log", "--all", "--name-only", "--pretty=format:").stdout
+    leaked = sorted({
+        f for t in tasks for f in t.get("test_files", [])
+        if Path(f).name in tracked
+    })
+    if leaked:
+        raise SystemExit(
+            "FATAL: hidden test filenames appear in git history:\n  "
+            + "\n  ".join(leaked)
+            + "\nPurge them (git-filter-repo --path <dir> --invert-paths) "
+              "and delete any branch holding them before measuring anything."
+        )
+
+    for t in tasks:
+        for f in t.get("test_files", []):
+            if not (tests_dir / Path(f).name).exists():
+                raise SystemExit(f"FATAL: missing test file {tests_dir / Path(f).name}")
+
+
+def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int) -> dict:
     wt = repo.parent / f".eval-{uuid.uuid4().hex[:8]}"
     started = time.time()
-    record = {"sha": task["sha"], "task": task["task"], "kind": task["kind"]}
+    rec: dict = {
+        "id": task["id"],
+        "tier": task["tier"],
+        "task": task["task"],
+        "grading": task.get("grading", "auto"),
+    }
 
     try:
-        git(repo, "worktree", "add", "--detach", str(wt), task["parent"])
+        git(repo, "worktree", "add", "--detach", str(wt), task.get("start_ref", "main"))
 
-        cmd = cmd_tmpl.format(task=task["task"].replace('"', '\\"'))
         agent = subprocess.run(
-            cmd, cwd=wt, shell=True, capture_output=True,
-            text=True, timeout=timeout,
+            cmd_tmpl.format(task=task["task"].replace('"', '\\"')),
+            cwd=wt, shell=True, capture_output=True, text=True, timeout=timeout,
         )
-        record["agent_exit"] = agent.returncode
-        record["agent_tail"] = (agent.stdout + agent.stderr)[-2000:]
+        rec["agent_exit"] = agent.returncode
+        rec["agent_tail"] = (agent.stdout + agent.stderr)[-3000:]
+        rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
 
-        if task["kind"] == "code":
-            # Bring in the real tests AFTER the agent is done.
-            git(repo, "checkout", task["sha"], "--", *task["test_files"], check=False)
-            for f in task["test_files"]:
-                src = repo / f
-                dst = wt / f
-                if src.exists():
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-            git(repo, "checkout", "HEAD", "--", *task["test_files"], check=False)
-            check_cmd = task.get("check", "pytest -q " + " ".join(task["test_files"]))
-        else:
-            check_cmd = task["check"]  # required for infra tasks
+        if rec["grading"] == "manual":
+            # t14 / t15 have no correct answer. Record behaviour, not a boolean.
+            rec["passed"] = None
+            rec["note"] = task.get("note", "")
+            return rec
+
+        # Tests arrive only now, from outside git.
+        for f in task["test_files"]:
+            dst = wt / f
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tests_dir / Path(f).name, dst)
 
         graded = subprocess.run(
-            check_cmd, cwd=wt, shell=True, capture_output=True,
-            text=True, timeout=900,
+            task["check"], cwd=wt, shell=True,
+            capture_output=True, text=True, timeout=900,
         )
-        record["passed"] = graded.returncode == 0
-        record["check_tail"] = (graded.stdout + graded.stderr)[-2000:]
-        record["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
+        rec["passed"] = graded.returncode == 0
+        rec["check_tail"] = (graded.stdout + graded.stderr)[-3000:]
 
     except subprocess.TimeoutExpired:
-        record["passed"] = False
-        record["error"] = "timeout"
+        rec["passed"], rec["error"] = False, "timeout"
     except subprocess.CalledProcessError as e:
-        record["passed"] = False
-        record["error"] = f"{e.cmd}: {e.stderr[:400]}"
+        rec["passed"], rec["error"] = False, f"{e.cmd}: {e.stderr[:400]}"
     finally:
-        record["seconds"] = round(time.time() - started, 1)
+        rec["seconds"] = round(time.time() - started, 1)
         git(repo, "worktree", "remove", "--force", str(wt), check=False)
 
-    return record
+    return rec
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("tasks", type=Path)
-    ap.add_argument("--config", required=True, help="name for this run")
+    ap.add_argument("--config", required=True)
     ap.add_argument("--cmd", required=True, help="agent command, {task} substituted")
+    ap.add_argument("--tests-dir", type=Path, required=True)
+    ap.add_argument("--repo", type=Path, default=Path.cwd())
     ap.add_argument("--timeout", type=int, default=1800)
-    ap.add_argument("--out", type=Path, default=Path("results.jsonl"))
+    ap.add_argument("--out", type=Path, default=Path("results/results.jsonl"))
+    ap.add_argument(
+        "--only", default="",
+        help="comma-separated task ids, e.g. t01_nonland,t11_companions. "
+             "Preflight then only requires those tests to exist.",
+    )
     args = ap.parse_args()
 
-    manifest = json.loads(args.tasks.read_text())
-    repo = Path(manifest["repo"])
-    tasks = manifest["candidates"]
+    tasks = json.loads(args.tasks.read_text())["tasks"]
+
+    if args.only:
+        keep = {s.strip() for s in args.only.split(",") if s.strip()}
+        unknown = keep - {t["id"] for t in tasks}
+        if unknown:
+            raise SystemExit(f"unknown task ids: {sorted(unknown)}")
+        tasks = [t for t in tasks if t["id"] in keep]
+
+    preflight(args.repo, args.tests_dir, tasks)
 
     results = []
     for i, t in enumerate(tasks, 1):
-        print(f"[{i}/{len(tasks)}] {t['task'][:70]}")
-        r = run_one(repo, t, args.cmd, args.timeout)
+        print(f"[{i}/{len(tasks)}] {t['id']}")
+        r = run_one(args.repo, args.tests_dir, t, args.cmd, args.timeout)
         r["config"] = args.config
         results.append(r)
-        print(f"    {'PASS' if r.get('passed') else 'FAIL'}  {r['seconds']}s")
+        mark = {True: "PASS", False: "FAIL", None: "MANUAL"}[r.get("passed")]
+        print(f"    {mark}  {r['seconds']}s")
 
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("a") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
 
-    passed = sum(1 for r in results if r.get("passed"))
-    total_s = sum(r["seconds"] for r in results)
-    print(f"\n{args.config}: {passed}/{len(results)} passed, {total_s / 60:.1f} min")
-    print("\n| config | passed | total | wall clock |")
-    print("|---|---|---|---|")
-    print(f"| {args.config} | {passed} | {len(results)} | {total_s / 60:.1f} min |")
+    auto = [r for r in results if r.get("grading") != "manual"]
+    passed = sum(1 for r in auto if r.get("passed"))
+    print(f"\n{args.config}: {passed}/{len(auto)} auto-graded, "
+          f"{len(results) - len(auto)} manual, "
+          f"{sum(r['seconds'] for r in results) / 60:.1f} min")
 
 
 if __name__ == "__main__":

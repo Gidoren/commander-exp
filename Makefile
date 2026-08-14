@@ -1,4 +1,5 @@
-.PHONY: data test smoke baseline clean
+.PHONY: data test smoke baseline clean\
+TESTS ?= $(HOME)/src/commander-exp-tests
 
 data:
 	python -c "from deckcheck.scryfall import fetch; print(fetch())"
@@ -7,8 +8,8 @@ test:
 	pytest -q tests/
 
 smoke:
-	python scripts/run_eval.py tasks/tasks.json --config null --cmd 'true'
-	python scripts/run_eval.py tasks/tasks.json --config oracle --cmd 'git merge --no-edit reference'
+	python scripts/run_eval.py tasks/tasks.json --config null \
+	  --tests-dir $(TESTS) --cmd 'true'
 
 baseline:
 	for i in 1 2 3; do \
