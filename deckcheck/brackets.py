@@ -28,6 +28,18 @@ def classify(deck: Deck, game_changers: set[str], combo_list: list[tuple[str, st
     Both `game_changers` (lowercase names) and `combo_list` are supplied by the
     caller. Do not hardcode either - they change with every update.
 
+    Lowercasing applies to MATCHING only, never to what is reported. Every name
+    list on BracketReport - `game_changers`, `mass_land_denial`, `extra_turns`,
+    `tutors` - holds the card's original `Card.name` casing, e.g.
+    `["Rhystic Study"]`, not `["rhystic study"]`. Compare case-insensitively,
+    then append `card.name` unchanged.
+
+    Those lists are NOT sorted. They follow `Deck.unique_cards()` order - that
+    is, mainboard order first (each distinct name once, at its first
+    occurrence), then commanders. Iterate `deck.unique_cards()` and append as
+    you go; do not re-sort. `combos` follows `combo_list` order instead, as
+    described on `find_combos`.
+
     The boundaries are numeric, not qualitative - apply them in this order:
 
       4  if there is ANY mass land denial card, OR ANY two-card combo present

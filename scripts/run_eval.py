@@ -78,7 +78,31 @@ def preflight(repo: Path, tests_dir: Path, tasks: list[dict]) -> None:
                 raise SystemExit(f"FATAL: missing test file {tests_dir / Path(f).name}")
 
 
-def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int) -> dict:
+def save_diff(wt: Path, diffs_dir: Path | None, task_id: str, rec: dict) -> None:
+    """Persist the agent's full diff, and record where it went.
+
+    `diff --stat` alone says a file changed but not what the agent wrote, and
+    the worktree is force-removed moments later - so without this the actual
+    implementation is unrecoverable and every failure has to be inferred from
+    test names. Must be called BEFORE the hidden tests are copied in, or they
+    land in the saved diff.
+
+    `add -A -N` marks untracked files intent-to-add so a new module the agent
+    created shows up in `git diff` too, without staging its contents.
+    """
+    if diffs_dir is None:
+        return
+    git(wt, "add", "-A", "-N", check=False)
+    text = git(wt, "diff", check=False).stdout
+    diffs_dir.mkdir(parents=True, exist_ok=True)
+    path = diffs_dir / f"{task_id}.diff"
+    path.write_text(text)
+    rec["diff_path"] = str(path)
+    rec["diff_bytes"] = len(text)
+
+
+def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int,
+            diffs_dir: Path | None = None) -> dict:
     wt = repo.parent / f".eval-{uuid.uuid4().hex[:8]}"
     started = time.time()
     rec: dict = {
@@ -106,11 +130,13 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
             rec["agent_exit"] = None
             rec["agent_tail"] = ((e.stdout or "") + (e.stderr or ""))[-3000:]
             rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
+            save_diff(wt, diffs_dir, task["id"], rec)
             rec["passed"], rec["error"] = False, "timeout"
             return rec
 
         rec["agent_tail"] = (stdout + stderr)[-3000:]
         rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
+        save_diff(wt, diffs_dir, task["id"], rec)
 
         if rec["grading"] == "manual":
             # t14 / t15 have no correct answer. Record behaviour, not a boolean.
@@ -152,6 +178,11 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--out", type=Path, default=Path("results/results.jsonl"))
     ap.add_argument(
+        "--diffs-dir", type=Path, default=Path("results/diffs"),
+        help="where to save each task's full diff (per-config subdir). "
+             "Pass an empty string to disable.",
+    )
+    ap.add_argument(
         "--only", default="",
         help="comma-separated task ids, e.g. t01_nonland,t11_companions. "
              "Preflight then only requires those tests to exist.",
@@ -169,10 +200,12 @@ def main() -> None:
 
     preflight(args.repo, args.tests_dir, tasks)
 
+    diffs_dir = (args.diffs_dir / args.config) if str(args.diffs_dir) else None
+
     results = []
     for i, t in enumerate(tasks, 1):
         print(f"[{i}/{len(tasks)}] {t['id']}")
-        r = run_one(args.repo, args.tests_dir, t, args.cmd, args.timeout)
+        r = run_one(args.repo, args.tests_dir, t, args.cmd, args.timeout, diffs_dir)
         r["config"] = args.config
         results.append(r)
         mark = {True: "PASS", False: "FAIL", None: "MANUAL"}[r.get("passed")]
