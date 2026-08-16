@@ -2,6 +2,19 @@
 
 STUB MODULE - tasks t12, t13.
 Signatures are fixed. Do not rename or change parameters.
+
+NAME CONVENTION (applies to every function in this module)
+
+Lowercasing applies to MATCHING only, never to what is reported. Every card
+name returned - in every name list on `BracketReport`, and in the pairs from
+`find_combos` - holds the card's original `Card.name` casing, e.g.
+"Sol Ring", not "sol ring". Compare case-insensitively, then use `card.name`
+unchanged.
+
+Returned lists preserve deck order - iterate `Deck.unique_cards()` (mainboard
+first, each distinct name at its first occurrence, then commanders) and append
+as you go. Do not sort. `combos` is the exception: it follows `combo_list`
+order, and its pairs echo the names as `combo_list` gives them.
 """
 
 from __future__ import annotations

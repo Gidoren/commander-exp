@@ -3,6 +3,17 @@
 STUB MODULE - tasks t05, t06, t08, t09, t10.
 Signatures are fixed. Do not rename or change parameters.
 Every function returns a list of Violation; an empty list means legal.
+
+NAME CONVENTION (applies to every function in this module)
+
+Lowercasing applies to MATCHING only, never to what is reported. Every card
+name returned - in `Violation.card` and in `Violation.message` - holds the
+card's original `Card.name` casing, e.g. "Sol Ring", not "sol ring". Compare
+case-insensitively, then use `card.name` unchanged.
+
+Returned lists preserve deck order - iterate `Deck.unique_cards()` (mainboard
+first, each distinct name at its first occurrence, then commanders) and append
+as you go. Do not sort.
 """
 
 from __future__ import annotations
@@ -39,6 +50,8 @@ def check_singleton(deck: Deck) -> list[Violation]:
 
     One Violation per offending name, not per excess copy.
 
+    See NAME CONVENTION at the top of this module for name casing and order.
+
     Task t06.
     """
     raise NotImplementedError
@@ -55,6 +68,8 @@ def check_color_identity(deck: Deck) -> list[Violation]:
     one from, there is nothing for it to flag. (The missing commander itself
     is check_commanders's problem, not this one's.)
 
+    See NAME CONVENTION at the top of this module for name casing and order.
+
     Task t08.
     """
     raise NotImplementedError
@@ -66,6 +81,8 @@ def check_banlist(deck: Deck, banned: set[str]) -> list[Violation]:
     `banned` is a set of lowercase card names, supplied by the caller. Do not
     hardcode a list - it changes. Card.legalities may carry a 'commander' key
     of 'banned' or 'legal'; prefer the passed-in set and fall back to that.
+
+    See NAME CONVENTION at the top of this module for name casing and order.
 
     Task t09.
     """
@@ -89,6 +106,10 @@ def check_commanders(deck: Deck) -> list[Violation]:
       Doctor's companion   one card with "Doctor's companion", paired with
                            one legendary Time Lord Doctor
 
-    Detect each from oracle_text and type_line. Task t10.
+    Detect each from oracle_text and type_line.
+
+    See NAME CONVENTION at the top of this module for name casing and order.
+
+    Task t10.
     """
     raise NotImplementedError

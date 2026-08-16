@@ -6,6 +6,17 @@ Each companion is a structurally different rule. They cannot be derived from
 one another by pattern matching - implement each on its own terms.
 
 Signatures are fixed. Do not rename or change parameters.
+
+NAME CONVENTION (applies to every function in this module)
+
+Lowercasing applies to MATCHING only, never to what is reported. Every card
+name returned - in `Violation.card` and in `Violation.message` - holds the
+card's original `Card.name` casing, e.g. "Sol Ring", not "sol ring". Compare
+case-insensitively, then use `card.name` unchanged.
+
+Returned lists preserve deck order - iterate `Deck.unique_cards()` (mainboard
+first, each distinct name at its first occurrence, then commanders) and append
+as you go. Do not sort.
 """
 
 from __future__ import annotations
@@ -57,6 +68,8 @@ def check_companion(deck: Deck, companion: Card) -> list[Violation]:
           The starting deck contains at least 20 cards MORE than the format
           minimum. In Commander that means 120 rather than 100.
 
+    See NAME CONVENTION at the top of this module for name casing and order.
+
     Task t11.
     """
     raise NotImplementedError
@@ -66,6 +79,11 @@ def companion_name_map() -> dict[str, str]:
     """Lowercase companion card name -> stable rule id.
 
     e.g. {"lurrus of the dream-den": "lurrus", ...}. Used for dispatch and for
-    the `rule` field on returned Violations. Task t11.
+    the `rule` field on returned Violations.
+
+    Deliberate exception to the module's NAME CONVENTION: these keys are
+    lowercase, because they are lookup keys rather than reported names.
+
+    Task t11.
     """
     raise NotImplementedError

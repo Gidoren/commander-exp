@@ -95,7 +95,7 @@
         "tests/test_t08_cmdr_subset.py"
       ],
       "check": "pytest -q tests/test_t08_cmdr_subset.py",
-      "task": "Implement deckcheck/legality.py::check_color_identity(deck: Deck) -> list[Violation]. Every card's identity must be a subset of the union of the commanders' identities. Use identity.color_identity, not the Scryfall field. rule='color_identity'."
+      "task": "Implement deckcheck/legality.py::check_color_identity(deck: Deck) -> list[Violation]. Every card's identity must be a subset of the union of the commanders' identities. Use identity.color_identity, not the Scryfall field. rule='color_identity'. Note: identity.color_identity is itself an unimplemented stub - implement it (and identity_string, if your messages use it) as part of this task."
     },
     {
       "id": "t09_banlist",
@@ -179,7 +179,7 @@
         "tests/test_t12_brackets.py"
       ],
       "check": "pytest -q tests/test_t12_brackets.py",
-      "task": "Implement deckcheck/brackets.py::classify(deck, game_changers, combo_list) -> BracketReport. Classify 1-5 using the passed-in game changers set and combo list, plus detected mass land denial, extra-turn effects, and tutor density. Return 4 rather than guessing at 5 where the distinction is not mechanically decidable; record why in reasons."
+      "task": "Implement deckcheck/brackets.py::classify(deck, game_changers, combo_list) -> BracketReport. Classify 1-5 using the passed-in game changers set and combo list, plus detected mass land denial, extra-turn effects, and tutor density. Return 4 rather than guessing at 5 where the distinction is not mechanically decidable; record why in reasons. Note: find_combos in the same module is an unimplemented stub - if you call it, implement it as part of this task rather than assuming it works."
     },
     {
       "id": "t13_combos",
