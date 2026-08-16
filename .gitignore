@@ -7,3 +7,5 @@ data/
 results/
 .eval-*/
 results.jsonl
+# llama-server / Studio logs copied in for analysis - large and machine-specific
+*.log

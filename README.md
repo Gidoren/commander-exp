@@ -82,3 +82,43 @@ files, that worktree starts empty and the `cp` has nowhere to land — see
 
 Record here before the first baseline run: model, quant, context length,
 sampling params, Pi version, Scryfall snapshot date.
+
+- **Model**: `unsloth/Qwen3.8-27B-GGUF`, quant `Q4_K_M` — not "Qwen3.6-27B" as
+  earlier `results.jsonl` configs and this doc assumed; that was a stale
+  alias in `~/.pi/agent/models.json` (`id: "qwen3.6-27b"`) that never matched
+  what the server actually had loaded. Any comparison across configs should
+  treat pre-2026-08-16 runs as a different (and not fully known) model/quant.
+- **Serving**: `llama-server` (part of Unsloth Studio, which does run
+  llama.cpp under the hood) with `--parallel 1` — a single client, single
+  decode slot, so `-c` isn't split across slots. `-c 143616`; Pi's
+  `contextWindow` is set to `131072` (headroom below the real ceiling, since
+  Pi's own token accounting doesn't include chat-template overhead, tool
+  schemas, or BOS tokens).
+- **Speculative decoding is on** (`--spec-type ngram-mod`). This can make
+  output vary run-to-run in ways unrelated to prompt or code changes -
+  keep that in mind before attributing a behavior difference to anything
+  else.
+- **Reasoning effort is `medium`, set server-side** via
+  `--chat-template-kwargs '{"enable_thinking": true, "preserve_thinking":
+  false, "reasoning_effort": "medium"}'`. This is not cosmetic. The chat
+  template defaults `reasoning_effort` to **`xhigh`**, and nothing overrode
+  it: Pi declares `"supportsReasoningEffort": false` in
+  `~/.pi/agent/models.json`, so it never sends the field regardless of its
+  own `--thinking` level. At `xhigh` the model would spend all 32768 tokens
+  inside an unterminated `<think>` block, return `finish_reason: length`
+  with **empty** `content`, and Pi would exit 0 having written nothing — the
+  t10/t12 "silent no-op". It also depressed quality broadly: t04, t08 and
+  t11 all began passing once effort dropped to `medium`. Treat any run
+  before 2026-08-16 as an `xhigh` run.
+- **DRY sampler on** (`--dry-multiplier 0.8`). `repeat_penalty` is 1.0 and
+  DRY defaulted to 0.0, so nothing could break a repetition loop once
+  entered. Combined with ngram speculation this was visible as generation at
+  356-719 tok/s (vs ~70 baseline) while burning the whole token budget.
+- **Reloading the model rewrites these flags.** Unsloth Studio spawns
+  `llama-server` itself and assigns a new random port each time; its
+  `speculative_type: "auto"` resolved to `draft-mtp` on one reload and
+  `ngram-mod` on another. Pin `speculative_type` explicitly and diff
+  `/proc/<pid>/cmdline` before and after any reload rather than trusting
+  the settings you passed.
+- **Pi**: 0.84.2.
+- **Scryfall snapshot**: `data/scryfall.json`, fetched 2026-08-14.
