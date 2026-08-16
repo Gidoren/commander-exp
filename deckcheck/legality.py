@@ -50,6 +50,11 @@ def check_color_identity(deck: Deck) -> list[Violation]:
     Use identity.color_identity, not the Scryfall field. With two commanders,
     the permitted identity is the union of both.
 
+    No commanders declared: return an empty list. This function only checks
+    cards against a commander-derived identity; with no commander to derive
+    one from, there is nothing for it to flag. (The missing commander itself
+    is check_commanders's problem, not this one's.)
+
     Task t08.
     """
     raise NotImplementedError

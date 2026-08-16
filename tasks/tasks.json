@@ -134,6 +134,42 @@
       "task": "Implement deckcheck/companions.py::check_companion(deck: Deck, companion: Card) -> list[Violation] and companion_name_map() -> dict[str, str], covering all nine companions. Each restriction is structurally different; read the stub docstring carefully, especially Jegantha and Zirda."
     },
     {
+      "id": "t11a_companions_mv",
+      "tier": "hard",
+      "module": "companions",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t11_companions.py"
+      ],
+      "check": "pytest -q tests/test_t11_companions.py -k \"lurrus or obosh or gyruda or keruga or companion_itself\"",
+      "task": "Implement deckcheck/companions.py::check_companion(deck: Deck, companion: Card) -> list[Violation], covering four companions with mana-value restrictions: Lurrus of the Dream-Den (every PERMANENT card in the starting deck has mana value 2 or less; nonpermanents are unconstrained), Obosh, the Preypiercer (every NONLAND card has an ODD mana value), Gyruda, Doom of Depths (every NONLAND card has an EVEN mana value; note 0 is even), and Keruga, the Macrosage (every NONLAND card has mana value 3 or greater). The companion itself is never part of the deck it constrains. Do not implement the other five companions. See the stub docstring in deckcheck/companions.py."
+    },
+    {
+      "id": "t11b_companions_cost",
+      "tier": "hard",
+      "module": "companions",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t11_companions.py"
+      ],
+      "check": "pytest -q tests/test_t11_companions.py -k \"jegantha or kaheera\"",
+      "task": "Implement deckcheck/companions.py::check_companion(deck: Deck, companion: Card) -> list[Violation], covering two companions: Jegantha, the Wellspring (no card has more than one of the SAME mana symbol in its mana cost; {1}{R}{R} violates, {1}{W}{U} does not; hybrid and Phyrexian symbols count as the symbol they are written as - read this one carefully, it is the most commonly misimplemented) and Kaheera, the Orphanguard (every CREATURE card is a Cat, Elemental, Nightmare, Dinosaur, or Beast; a deck with no creatures satisfies it trivially). Do not implement the other seven companions. See the stub docstring in deckcheck/companions.py."
+    },
+    {
+      "id": "t11c_companions_struct",
+      "tier": "hard",
+      "module": "companions",
+      "start_ref": "main",
+      "test_ref": "eval/tests",
+      "test_files": [
+        "tests/test_t11_companions.py"
+      ],
+      "check": "pytest -q tests/test_t11_companions.py -k \"umori or zirda or yorion\"",
+      "task": "Implement deckcheck/companions.py::check_companion(deck: Deck, companion: Card) -> list[Violation], covering three companions: Umori, the Collector (every NONLAND card shares a card type; any one shared type suffices, and cards with multiple types can satisfy it via any of them), Zirda, the Dawnwaker (every PERMANENT card has an activated ability, written as 'cost: effect' in the rules text; beware colons that are not activated abilities, such as those inside keyword reminder text), and Yorion, Sky Nomad (the starting deck contains at least 20 cards more than the format minimum; in Commander that means 120 rather than 100). Do not implement the other six companions. See the stub docstring in deckcheck/companions.py."
+    },
+    {
       "id": "t12_brackets",
       "tier": "hard",
       "module": "brackets",

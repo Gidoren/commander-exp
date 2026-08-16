@@ -19,13 +19,14 @@ Usage:
     python scripts/run_eval.py tasks/tasks.json \
         --config baseline-1 \
         --tests-dir ~/src/commander-exp-tests \
-        --cmd 'pi --yolo "{task}"'
+        --cmd 'pi --yolo {task}'
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -37,6 +38,20 @@ def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
     return subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, check=check
     )
+
+
+def substitute_cmd(cmd_tmpl: str) -> str:
+    """Replace {task} with the env-var reference the task is passed through.
+
+    The task string is never interpolated into the shell command directly -
+    it goes through $EVAL_TASK in the subprocess environment instead, so
+    special characters (->, quotes, ...) can't be word-split by the shell.
+    A --cmd template that wraps {task} in its own quotes would double-quote
+    the substitution and break that guarantee, so it's rejected outright.
+    """
+    if '"{task}"' in cmd_tmpl or "'{task}'" in cmd_tmpl:
+        raise SystemExit("--cmd: do not quote {task}; substitution supplies quoting")
+    return cmd_tmpl.replace("{task}", '"$EVAL_TASK"')
 
 
 def preflight(repo: Path, tests_dir: Path, tasks: list[dict]) -> None:
@@ -76,12 +91,25 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
     try:
         git(repo, "worktree", "add", "--detach", str(wt), task.get("start_ref", "main"))
 
-        agent = subprocess.run(
-            cmd_tmpl.format(task=task["task"].replace('"', '\\"')),
-            cwd=wt, shell=True, capture_output=True, text=True, timeout=timeout,
-        )
-        rec["agent_exit"] = agent.returncode
-        rec["agent_tail"] = (agent.stdout + agent.stderr)[-3000:]
+        cmd = substitute_cmd(cmd_tmpl)
+        env = {**os.environ, "EVAL_TASK": task["task"], "CI": "1", "TERM": "dumb"}
+        try:
+            agent = subprocess.run(
+                cmd, cwd=wt, shell=True, capture_output=True, text=True,
+                timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+            )
+            rec["agent_exit"] = agent.returncode
+            stdout, stderr = agent.stdout, agent.stderr
+        except subprocess.TimeoutExpired as e:
+            # Partial output is captured on the exception itself - grab it
+            # before the timeout propagates, instead of losing it.
+            rec["agent_exit"] = None
+            rec["agent_tail"] = ((e.stdout or "") + (e.stderr or ""))[-3000:]
+            rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
+            rec["passed"], rec["error"] = False, "timeout"
+            return rec
+
+        rec["agent_tail"] = (stdout + stderr)[-3000:]
         rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
 
         if rec["grading"] == "manual":

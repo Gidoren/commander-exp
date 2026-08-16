@@ -28,21 +28,20 @@ def classify(deck: Deck, game_changers: set[str], combo_list: list[tuple[str, st
     Both `game_changers` (lowercase names) and `combo_list` are supplied by the
     caller. Do not hardcode either - they change with every update.
 
-    Bracket guidance:
-      1  Exhibition   no game changers, no mass land denial, no extra-turn
-                      chains, no two-card infinite combos, minimal tutoring
-      2  Core         as bracket 1, but a normal amount of tutoring
-      3  Upgraded     up to three game changers; no mass land denial; no
-                      two-card infinite combo that wins on the spot
-      4  Optimized    no restrictions, but not built to win as fast as possible
-      5  cEDH         built to win as fast as possible
+    The boundaries are numeric, not qualitative - apply them in this order:
 
-    Distinguishing 4 from 5 is not mechanically decidable. Return 4 for decks
-    that exceed bracket 3 and record the ambiguity in `reasons` rather than
-    guessing at 5.
+      4  if there is ANY mass land denial card, OR ANY two-card combo present
+         (both cards of a combo_list pair in the deck), OR 4 or more game
+         changers.
+      3  else if there is 1, 2, or 3 game changers.
+      2  else if there is 1 or more tutors.
+      1  otherwise (0 game changers, 0 tutors, no mass land denial, no combo).
+      5  never returned automatically - distinguishing 4 from 5 is not
+         mechanically decidable. Decks that would exceed bracket 3 always
+         classify as 4; record why in `reasons` rather than guessing at 5.
 
-    Detect mass land denial and extra-turn effects from oracle text. Extra-turn
-    cards that cannot be chained are treated more leniently than those that can.
+    Extra-turn effects are detected and recorded on the report but do not by
+    themselves change the bracket.
 
     Task t12.
     """
