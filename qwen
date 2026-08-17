@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# qwen - bring up / tear down a local llama-server + pi wiring, pinned and verified.
+#
+#   qwen up [--trace] | down | restart | status | verify [--deep] | config | logs
+#   qwen trace on|off
+#
+# Every setting is established in EVAL-FINDINGS.md. The point of the script is
+# that nothing can drift silently: after launch it reads back
+# /proc/<pid>/cmdline AND the live /props, and refuses to stay up if reality
+# disagrees with intent.
+#
+# It owns three things, because breaking any one of them is silent:
+#   1. the server        - flags that cost four days to establish
+#   2. pi's models.json  - endpoint AND contextWindow (see CTX note below)
+#   3. the trace proxy   - optional; the tool that diagnosed two of three
+#                          silent failure modes after inference-from-silence
+#                          got them wrong four times
+#
+# Unsloth Studio is NOT required to serve; it is only how the GGUF was
+# downloaded. Studio must not serve the same model concurrently - `up` checks.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------- config ----
+
+BIN="${QWEN_BIN:-$HOME/.unsloth/llama.cpp/llama-server}"
+MODEL_GLOB="${QWEN_MODEL:-$HOME/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/Qwen3.8-27B-Q4_K_M.gguf}"
+ALIAS="${QWEN_ALIAS:-qwen3.8-27b}"
+PORT="${QWEN_PORT:-8890}"
+PROXY_PORT="${QWEN_PROXY_PORT:-8899}"
+HOST="127.0.0.1"
+
+CTX="${QWEN_CTX:-98304}"           # whole pool goes to one slot at --parallel 1
+NPREDICT="${QWEN_NPREDICT:-32768}" # pi does not send max_tokens; cap it here
+TEMP="${QWEN_TEMP:-0.3}"
+TOPP="${QWEN_TOPP:-0.9}"
+EFFORT="${QWEN_EFFORT:-medium}"    # xhigh burns the budget inside an unclosed think block
+SPEC="${QWEN_SPEC:-ngram-mod}"     # pin it; "auto" resolved differently across restarts
+
+# DRY breaks nothing at 64 and cannot fire on the loops seen here (period was
+# ~1338 tokens). Kept because it is cheap. NEVER set -1: this build rejects the
+# value outright, and a rejected flag leaves you with no server at all.
+DRY_MULT="${QWEN_DRY_MULT:-0.8}"
+DRY_LAST_N="${QWEN_DRY_LAST_N:-64}"
+
+# ngram-mod sub-parameters. Without these the mode runs on its own defaults,
+# which is a different configuration than the one that was measured.
+NGRAM_MATCH="${QWEN_NGRAM_MATCH:-24}"
+NGRAM_MIN="${QWEN_NGRAM_MIN:-48}"
+NGRAM_MAX="${QWEN_NGRAM_MAX:-64}"
+
+# pi's contextWindow MUST sit below the server's -c. pi's own accounting
+# excludes chat-template overhead, tool schemas and BOS, so a client that
+# declares the server's exact limit lands 30-60 tokens over it - that was a real
+# defect here (exceed_context_size_error), not a hypothetical.
+PI_CTX_HEADROOM="${QWEN_PI_CTX_HEADROOM:-8192}"
+PI_CTX=$(( CTX - PI_CTX_HEADROOM ))
+
+PI_MODELS="${QWEN_PI_MODELS:-$HOME/.pi/agent/models.json}"
+PI_PROVIDER="${QWEN_PI_PROVIDER:-local}"
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROXY_PY="${QWEN_PROXY_PY:-$REPO_DIR/scripts/trace_proxy.py}"
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/qwen"
+PIDFILE="$STATE/qwen.pid"
+PROXY_PIDFILE="$STATE/proxy.pid"
+PI_BACKUP="$STATE/models.json.before-qwen"
+LOGLINK="$STATE/current.log"
+TRACELINK="$STATE/current-trace.jsonl"
+
+REQUIRED=(--jinja --flash-attn --parallel --ctx-size --predict --temp --top-p
+          --chat-template-kwargs --spec-type --dry-multiplier --dry-penalty-last-n
+          --cache-type-k --cache-type-v)
+
+# ------------------------------------------------------------- internals ----
+
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[36m%s\033[0m %s\n' "qwen:" "$*"; }
+ok()   { printf '\033[32m%s\033[0m %s\n' "  ok:" "$*"; }
+warn() { printf '\033[33m%s\033[0m %s\n' "warn:" "$*" >&2; }
+
+resolve_model() {
+  # shellcheck disable=SC2086
+  local m; m=$(ls -1 $MODEL_GLOB 2>/dev/null | head -1) || true
+  [[ -n "$m" ]] || die "no model matched: $MODEL_GLOB"
+  printf '%s' "$m"
+}
+
+pid_from()    { [[ -f "$1" ]] || return 1; local p; p=$(<"$1"); [[ -d "/proc/$p" ]] || return 1; printf '%s' "$p"; }
+running_pid() { pid_from "$PIDFILE"; }
+proxy_pid()   { pid_from "$PROXY_PIDFILE"; }
+cmdline_of()  { tr '\0' ' ' < "/proc/$1/cmdline"; }
+
+wait_healthy() {
+  local p=$1 tries=${2:-180}
+  for ((i=0; i<tries; i++)); do
+    [[ -d "/proc/$p" ]] || return 1
+    curl -sf "http://$HOST:$PORT/health" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# --------------------------------------------------------------- pi wiring --
+
+pi_endpoint() {
+  if [[ -f "$PROXY_PIDFILE" ]] && proxy_pid >/dev/null 2>&1
+  then printf 'http://%s:%s/v1' "$HOST" "$PROXY_PORT"
+  else printf 'http://%s:%s/v1' "$HOST" "$PORT"; fi
+}
+
+pi_write() {
+  local url=$1 ctx=$2
+  [[ -f "$PI_MODELS" ]] || { warn "no pi config at $PI_MODELS - skipping pi wiring"; return 0; }
+  [[ -f "$PI_BACKUP" ]] || cp "$PI_MODELS" "$PI_BACKUP"
+  python3 - "$PI_MODELS" "$PI_PROVIDER" "$url" "$ctx" <<'PY'
+import json,sys
+path,prov,url,ctx=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
+d=json.load(open(path))
+p=d.get("providers",{}).get(prov)
+if not p: sys.exit(f"provider {prov!r} not in {path}")
+p["baseUrl"]=url
+for m in p.get("models",[]):
+    m["contextWindow"]=ctx
+json.dump(d,open(path,"w"),indent=2); open(path,"a").write("\n")
+print(f"  pi -> {url}  contextWindow={ctx}")
+PY
+}
+
+pi_restore() {
+  [[ -f "$PI_BACKUP" ]] || return 0
+  cp "$PI_BACKUP" "$PI_MODELS" && rm -f "$PI_BACKUP"
+  ok "pi config restored"
+}
+
+# ------------------------------------------------------------------ proxy ---
+
+proxy_up() {
+  proxy_pid >/dev/null 2>&1 && { info "proxy already running"; return 0; }
+  [[ -f "$PROXY_PY" ]] || die "trace proxy not found at $PROXY_PY (set QWEN_PROXY_PY)"
+  ss -tln 2>/dev/null | grep -q ":$PROXY_PORT " && die "port $PROXY_PORT already in use"
+  local trace="$STATE/trace-$(date +%Y%m%d-%H%M%S).jsonl"
+  nohup python3 "$PROXY_PY" --port "$PROXY_PORT" \
+        --upstream "http://$HOST:$PORT" --trace "$trace" \
+        >"$STATE/proxy.log" 2>&1 &
+  local p=$!; echo "$p" > "$PROXY_PIDFILE"; ln -sf "$trace" "$TRACELINK"
+  sleep 2
+  [[ -d "/proc/$p" ]] || { rm -f "$PROXY_PIDFILE"; die "proxy died: $(tail -3 "$STATE/proxy.log")"; }
+  ok "proxy on :$PROXY_PORT -> :$PORT   trace $TRACELINK"
+}
+
+proxy_down() {
+  local p; p=$(proxy_pid) || { rm -f "$PROXY_PIDFILE"; return 0; }
+  kill "$p" 2>/dev/null || true
+  for ((i=0; i<10; i++)); do [[ -d "/proc/$p" ]] || break; sleep 1; done
+  [[ -d "/proc/$p" ]] && kill -9 "$p" 2>/dev/null || true
+  rm -f "$PROXY_PIDFILE"; ok "proxy stopped"
+}
+
+# ------------------------------------------------------------ verification --
+
+verify_cmdline() {
+  local p=$1 cl missing=()
+  cl=$(cmdline_of "$p")
+  for f in "${REQUIRED[@]}"; do [[ "$cl" == *"$f"* ]] || missing+=("$f"); done
+  ((${#missing[@]})) && { printf '\033[31mFLAG DRIFT\033[0m missing: %s\n' "${missing[*]}" >&2; return 1; }
+  local bad=()
+  [[ "$cl" == *"--parallel 1"*          ]] || bad+=("parallel!=1")
+  [[ "$cl" == *"--temp $TEMP"*          ]] || bad+=("temp!=$TEMP")
+  [[ "$cl" == *"--top-p $TOPP"*         ]] || bad+=("top_p!=$TOPP")
+  [[ "$cl" == *"--ctx-size $CTX"*       ]] || bad+=("ctx!=$CTX")
+  [[ "$cl" == *"--flash-attn on"*       ]] || bad+=("flash-attn!=on")
+  [[ "$cl" == *"--spec-type $SPEC"*     ]] || bad+=("spec!=$SPEC")
+  [[ "$cl" == *"\"reasoning_effort\": \"$EFFORT\""* ]] || bad+=("effort!=$EFFORT")
+  ((${#bad[@]})) && { printf '\033[31mVALUE DRIFT\033[0m %s\n' "${bad[*]}" >&2; return 1; }
+  return 0
+}
+
+# The cmdline says what was asked for; /props says what the engine actually did.
+verify_props() {
+  local out
+  out=$(curl -sf "http://$HOST:$PORT/props" 2>/dev/null) || { echo "  props: unreachable" >&2; return 1; }
+  # JSON goes through argv, never through the heredoc - it contains quotes.
+  python3 -c '
+import json,sys
+p=json.loads(sys.argv[1])["default_generation_settings"]["params"]
+want={"temperature":float(sys.argv[2]),"top_p":float(sys.argv[3]),"dry_penalty_last_n":int(sys.argv[4])}
+bad=[f"{k}={p.get(k)} want {v}" for k,v in want.items()
+     if abs(float(p.get(k,-999))-float(v))>1e-3]
+print("  props:", "ok" if not bad else "DRIFT " + "; ".join(bad))
+sys.exit(1 if bad else 0)
+' "$out" "$TEMP" "$TOPP" "$DRY_LAST_N"
+}
+
+# reasoning_effort is not visible in /props. The only honest check is
+# behavioural: at medium a short prompt returns in seconds; at xhigh it can burn
+# the entire 32768-token budget inside an unclosed think block and return
+# nothing. That distinction is unmissable, so measure it rather than trust it.
+verify_effort() {
+  local t0 t1 body toks
+  t0=$(date +%s)
+  body=$(curl -sf --max-time 120 "http://$HOST:$PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"Reply with the single word OK."}],"max_tokens":256}') \
+    || { echo "  effort: probe failed" >&2; return 1; }
+  t1=$(date +%s)
+  toks=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['usage']['completion_tokens'])" "$body")
+  if (( toks >= 250 || t1-t0 > 60 )); then
+    printf '  effort: \033[31mSUSPECT\033[0m %ss, %s tokens - looks like xhigh\n' "$((t1-t0))" "$toks" >&2
+    return 1
+  fi
+  printf '  effort: ok (%ss, %s tokens)\n' "$((t1-t0))" "$toks"
+}
+
+# ---------------------------------------------------------------- up/down ---
+
+cmd_up() {
+  local want_trace=0
+  [[ "${1:-}" == "--trace" ]] && want_trace=1
+
+  if p=$(running_pid); then die "already running (pid $p) - use 'qwen restart'"; fi
+  if pgrep -f 'llama-server' >/dev/null 2>&1; then
+    die "another llama-server is running (Unsloth Studio?). Stop it first:
+       pgrep -af llama-server"
+  fi
+  [[ -x "$BIN" ]] || die "llama-server not executable at $BIN"
+  (( PI_CTX > 0 )) || die "PI_CTX would be <= 0; raise QWEN_CTX above $PI_CTX_HEADROOM"
+
+  local model; model=$(resolve_model)
+  mkdir -p "$STATE"
+  local log="$STATE/server-$(date +%Y%m%d-%H%M%S).log"
+
+  info "model  $(basename "$model")"
+  info "port   $PORT   ctx $CTX   predict $NPREDICT   (pi ctx $PI_CTX)"
+  info "temp   $TEMP   top_p $TOPP   effort $EFFORT   spec $SPEC"
+
+  nohup "$BIN" \
+    -m "$model" \
+    --alias "$ALIAS" \
+    --host "$HOST" --port "$PORT" \
+    --ctx-size "$CTX" \
+    --predict "$NPREDICT" \
+    --parallel 1 \
+    --n-gpu-layers 99 \
+    --flash-attn on \
+    --no-context-shift \
+    --jinja \
+    --temp "$TEMP" \
+    --top-p "$TOPP" \
+    --cache-type-k f16 --cache-type-v f16 \
+    --dry-multiplier "$DRY_MULT" \
+    --dry-penalty-last-n "$DRY_LAST_N" \
+    --spec-type "$SPEC" \
+    --spec-ngram-mod-n-match "$NGRAM_MATCH" \
+    --spec-ngram-mod-n-min "$NGRAM_MIN" \
+    --spec-ngram-mod-n-max "$NGRAM_MAX" \
+    --chat-template-kwargs "{\"enable_thinking\": true, \"preserve_thinking\": false, \"reasoning_effort\": \"$EFFORT\"}" \
+    --metrics \
+    >"$log" 2>&1 &
+
+  local p=$!
+  echo "$p" > "$PIDFILE"
+  ln -sf "$log" "$LOGLINK"
+
+  info "pid $p - waiting for health..."
+  if ! wait_healthy "$p"; then
+    printf '\033[31mfailed to become healthy. last 25 lines:\033[0m\n' >&2
+    tail -25 "$log" >&2
+    kill "$p" 2>/dev/null || true; rm -f "$PIDFILE"; exit 1
+  fi
+  ok "healthy on http://$HOST:$PORT"
+
+  if ! verify_cmdline "$p"; then
+    printf '\033[31mtearing down: launched config does not match intent\033[0m\n' >&2
+    kill "$p" 2>/dev/null || true; rm -f "$PIDFILE"; exit 1
+  fi
+  ok "cmdline verified"
+  verify_props || warn "engine params differ from intent - see 'qwen verify'"
+
+  (( want_trace )) && proxy_up
+
+  pi_write "$(pi_endpoint)" "$PI_CTX"
+  ok "logs: $LOGLINK"
+  info "ready - pi will reach it at $(pi_endpoint)"
+}
+
+cmd_down() {
+  proxy_down
+  pi_restore
+  local p
+  if ! p=$(running_pid); then
+    pgrep -f 'llama-server' >/dev/null 2>&1 \
+      && die "no pidfile, but a llama-server is running: $(pgrep -af llama-server)"
+    info "not running"; rm -f "$PIDFILE"; return 0
+  fi
+  info "stopping pid $p"
+  kill "$p" 2>/dev/null || true
+  for ((i=0; i<30; i++)); do [[ -d "/proc/$p" ]] || break; sleep 1; done
+  [[ -d "/proc/$p" ]] && { info "still up, SIGKILL"; kill -9 "$p" 2>/dev/null || true; }
+  rm -f "$PIDFILE"
+  ok "stopped"
+}
+
+cmd_status() {
+  local p rc=0
+  if p=$(running_pid); then
+    echo "server   running  pid=$p  port=$PORT"
+    curl -sf "http://$HOST:$PORT/health" >/dev/null 2>&1 \
+      && echo "health   ok" || { echo "health   FAILING"; rc=1; }
+    verify_cmdline "$p" >/dev/null 2>&1 && echo "config   verified" || { echo "config   DRIFTED"; rc=1; }
+    nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>/dev/null \
+      | grep "^$p," | sed 's/^/vram     /' || true
+  else
+    echo "server   stopped"; rc=1
+  fi
+  if p=$(proxy_pid); then echo "proxy    running  pid=$p  port=$PROXY_PORT  trace=$(readlink -f "$TRACELINK" 2>/dev/null)"
+  else echo "proxy    stopped"; fi
+  if [[ -f "$PI_MODELS" ]]; then
+    python3 - "$PI_MODELS" "$PI_PROVIDER" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); p=d["providers"][sys.argv[2]]
+m=p["models"][0]
+print(f"pi       {p['baseUrl']}  contextWindow={m.get('contextWindow')}")
+PY
+  fi
+  return $rc
+}
+
+cmd_verify() {
+  local p; p=$(running_pid) || die "not running"
+  verify_cmdline "$p" && ok "cmdline matches intent"
+  verify_props || true
+  [[ "${1:-}" == "--deep" ]] && verify_effort || true
+  # pi's ceiling must stay under the server's, or requests land over the limit
+  if [[ -f "$PI_MODELS" ]]; then
+    python3 - "$PI_MODELS" "$PI_PROVIDER" "$CTX" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); p=d["providers"][sys.argv[2]]; ctx=int(sys.argv[3])
+for m in p.get("models",[]):
+    cw=m.get("contextWindow",0)
+    print(f"  pi ctx: {'ok' if cw<ctx else 'OVER SERVER LIMIT'} ({cw} vs server {ctx})")
+PY
+  fi
+  echo; cmdline_of "$p" | tr ' ' '\n' | sed '/^$/d' | paste - - 2>/dev/null || true
+}
+
+cmd_config() {
+  cat <<EOF
+bin       $BIN
+model     $(resolve_model 2>/dev/null || echo "NOT FOUND: $MODEL_GLOB")
+endpoint  http://$HOST:$PORT/v1        (direct)
+proxy     http://$HOST:$PROXY_PORT/v1  (when 'up --trace')
+alias     $ALIAS
+ctx       $CTX      (whole pool - --parallel 1)
+pi ctx    $PI_CTX      (= ctx - $PI_CTX_HEADROOM headroom; pi undercounts template/tool overhead)
+predict   $NPREDICT (pi does not send max_tokens)
+temp      $TEMP     top_p $TOPP
+effort    $EFFORT
+spec      $SPEC     (n-match $NGRAM_MATCH, n-min $NGRAM_MIN, n-max $NGRAM_MAX)
+dry       mult $DRY_MULT  last-n $DRY_LAST_N   (never -1: rejected, leaves no server)
+kv cache  f16
+pi config $PI_MODELS  (provider: $PI_PROVIDER)
+state     $STATE
+EOF
+}
+
+case "${1:-}" in
+  up)      shift; cmd_up "${1:-}" ;;
+  down)    cmd_down ;;
+  restart) shift; cmd_down; sleep 2; cmd_up "${1:-}" ;;
+  status)  cmd_status ;;
+  verify)  shift; cmd_verify "${1:-}" ;;
+  config)  cmd_config ;;
+  # `up` can be interrupted between launching the server and wiring pi, and it
+  # refuses to re-run while the server is up. This repairs that state.
+  wire)    running_pid >/dev/null 2>&1 || die "server not running"
+           pi_write "$(pi_endpoint)" "$PI_CTX" ;;
+  logs)    tail -f "$LOGLINK" ;;
+  trace)   case "${2:-}" in
+             on)  proxy_up;  pi_write "$(pi_endpoint)" "$PI_CTX" ;;
+             off) proxy_down; pi_write "$(pi_endpoint)" "$PI_CTX" ;;
+             *)   echo "usage: qwen trace {on|off}"; exit 2 ;;
+           esac ;;
+  *)       echo "usage: qwen {up [--trace]|down|restart|status|verify [--deep]|config|wire|logs|trace on|off}"; exit 2 ;;
+esac
