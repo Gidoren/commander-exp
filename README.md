@@ -2,6 +2,12 @@
 
 Commander deck validator. Also the substrate for an agent evaluation harness.
 
+> **[RETROSPECTIVE.md](RETROSPECTIVE.md) — read this first.** Four days of
+> running a local coding agent against this harness, and what came of it. The
+> short version: the harness was wrong in seven independent ways, and most of
+> what looked like model failure was measurement failure. Final frozen baseline
+> is 10/13 with a spread of 1, on a 27B model quantized to 4 bits.
+
 ## Two audiences
 
 Read as a project: a library that parses a decklist and validates it against
