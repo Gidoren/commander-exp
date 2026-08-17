@@ -9,3 +9,10 @@ results/
 results.jsonl
 # llama-server / Studio logs copied in for analysis - large and machine-specific
 *.log
+# Briefs and findings quote hidden-test expectations and known-real failures.
+# Worktrees check out main, so anything tracked here lands in the agent's own
+# working directory - BRIEF-step-2.md named t04's answer and t08's disputed
+# spec resolution, and agent `ls` output confirms it was visible. Keep these
+# alongside the tests in $ANSWERS instead.
+BRIEF-*.md
+EVAL-FINDINGS.md
