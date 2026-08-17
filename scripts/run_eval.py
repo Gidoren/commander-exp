@@ -120,8 +120,21 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
     try:
         git(repo, "worktree", "add", "--detach", str(wt), task.get("start_ref", "main"))
 
+        # Tell the agent where it is. Task strings use relative paths, so an
+        # agent that reaches for an absolute one is guessing - and it guesses
+        # the original repo, which does not exist inside the worktree. Traces
+        # show that ENOENT starting a cycle the agent never escapes: `read` a
+        # directory -> EISDIR, `ls` the worktree -> succeeds, repeat, ~1338
+        # tokens per cycle and hundreds of iterations until the timeout.
+        task_text = (
+            f"You are working in: {wt}\n"
+            f"All paths are relative to that directory. Do not look outside it.\n\n"
+            f"{task['task']}"
+        )
+        rec["task"] = task_text
+
         cmd = substitute_cmd(cmd_tmpl)
-        env = {**os.environ, "EVAL_TASK": task["task"], "CI": "1", "TERM": "dumb"}
+        env = {**os.environ, "EVAL_TASK": task_text, "CI": "1", "TERM": "dumb"}
         try:
             agent = subprocess.run(
                 cmd, cwd=wt, shell=True, capture_output=True, text=True,
