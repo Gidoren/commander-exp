@@ -8,6 +8,20 @@ Commander deck validator. Also the substrate for an agent evaluation harness.
 > what looked like model failure was measurement failure. Final frozen baseline
 > is 10/13 with a spread of 1, on a 27B model quantized to 4 bits.
 
+**Status: measurement complete, harness retained.** The task set is close to
+saturated — ten of thirteen tasks pass regardless of intervention, against a
+detection floor of two — so this suite is no longer used to compare
+orchestration approaches. It is kept as a **22-minute regression check** for
+model or serving-config changes, tagged
+[`baseline-frozen-2026-08-17`](../../releases/tag/baseline-frozen-2026-08-17).
+Re-running it needs no commits; `results/` is gitignored.
+
+The parts worth reusing elsewhere are `scripts/trace_proxy.py` (wire-level
+request/response tracing between the agent and the model server, which is what
+finally diagnosed two of the three silent failures) and the `null` / `oracle`
+brackets in `make smoke`, which catch grading bugs before they get blamed on the
+model.
+
 ## Two audiences
 
 Read as a project: a library that parses a decklist and validates it against
