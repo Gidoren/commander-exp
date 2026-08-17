@@ -135,22 +135,48 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
 
         cmd = substitute_cmd(cmd_tmpl)
         env = {**os.environ, "EVAL_TASK": task_text, "CI": "1", "TERM": "dumb"}
-        try:
-            agent = subprocess.run(
-                cmd, cwd=wt, shell=True, capture_output=True, text=True,
-                timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+
+        # Retry a null result - no diff, no output, clean exit. Wire traces show
+        # what produces one: the model closes its reasoning block normally
+        # (finish_reason "stop", not "length") and then emits an empty final
+        # message - no content, no tool call - so pi has nothing to act on and
+        # exits 0. One capture took 12200 completion tokens, all of it
+        # reasoning, and wrote nothing in 24s.
+        #
+        # This is safe to retry precisely because nothing was attempted: a task
+        # that produced no diff and no output is a null observation, not a
+        # failed one, and carries no evidence about capability either way. A
+        # timeout is NOT retried - that is a real failure with real evidence.
+        # Retries are recorded so their rate stays visible rather than becoming
+        # an invisible subsidy to the pass rate.
+        rec["null_retries"] = 0
+        for attempt in range(2):
+            try:
+                agent = subprocess.run(
+                    cmd, cwd=wt, shell=True, capture_output=True, text=True,
+                    timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+                )
+                rec["agent_exit"] = agent.returncode
+                stdout, stderr = agent.stdout, agent.stderr
+            except subprocess.TimeoutExpired as e:
+                # Partial output is captured on the exception itself - grab it
+                # before the timeout propagates, instead of losing it.
+                rec["agent_exit"] = None
+                rec["agent_tail"] = ((e.stdout or "") + (e.stderr or ""))[-3000:]
+                rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
+                save_diff(wt, diffs_dir, task["id"], rec)
+                rec["passed"], rec["error"] = False, "timeout"
+                return rec
+
+            null = (
+                not (stdout + stderr).strip()
+                and not git(wt, "status", "--porcelain", check=False).stdout.strip()
+                and agent.returncode == 0
+                and rec["grading"] != "manual"
             )
-            rec["agent_exit"] = agent.returncode
-            stdout, stderr = agent.stdout, agent.stderr
-        except subprocess.TimeoutExpired as e:
-            # Partial output is captured on the exception itself - grab it
-            # before the timeout propagates, instead of losing it.
-            rec["agent_exit"] = None
-            rec["agent_tail"] = ((e.stdout or "") + (e.stderr or ""))[-3000:]
-            rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
-            save_diff(wt, diffs_dir, task["id"], rec)
-            rec["passed"], rec["error"] = False, "timeout"
-            return rec
+            if not null or attempt == 1:
+                break
+            rec["null_retries"] += 1
 
         rec["agent_tail"] = (stdout + stderr)[-3000:]
         rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()

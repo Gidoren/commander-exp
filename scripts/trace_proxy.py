@@ -166,7 +166,9 @@ def summarize_sse(chunks: list[bytes]) -> dict:
         "content_len": len(text),
         "content_empty": not text,
         "reasoning_len": len("".join(reasoning)),
-        "n_tool_calls": tools,
+        # count distinct calls, not deltas - arguments stream across many
+        # deltas, so summing them reported 17 where there were 2
+        "n_tool_calls": len(calls),
         "tools": names,
         "calls": [describe_call(c["name"], "".join(c["args"]))
                   for c in calls.values()],
