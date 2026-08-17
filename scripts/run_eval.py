@@ -112,6 +112,11 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
         "grading": task.get("grading", "auto"),
     }
 
+    # An agent once wrote into the main repo instead of its worktree. Snapshot
+    # first so we compare against what was already dirty - the repo legitimately
+    # carries local edits, and aborting on those would be a false alarm.
+    before = set(git(repo, "status", "--porcelain", check=False).stdout.splitlines())
+
     try:
         git(repo, "worktree", "add", "--detach", str(wt), task.get("start_ref", "main"))
 
@@ -137,6 +142,18 @@ def run_one(repo: Path, tests_dir: Path, task: dict, cmd_tmpl: str, timeout: int
         rec["agent_tail"] = (stdout + stderr)[-3000:]
         rec["diff_stat"] = git(wt, "diff", "--stat", check=False).stdout.strip()
         save_diff(wt, diffs_dir, task["id"], rec)
+
+        # Escaping the worktree contaminates the scaffold for every later task
+        # and fails silently - unlike everything else here, it is unrecoverable
+        # once committed. Stop the whole run rather than measure against a
+        # polluted tree.
+        leaked = set(git(repo, "status", "--porcelain", check=False).stdout.splitlines()) - before
+        if leaked:
+            raise SystemExit(
+                f"FATAL: agent wrote outside its worktree, into {repo}:\n  "
+                + "\n  ".join(sorted(leaked))
+                + "\nRevert these before trusting any further result."
+            )
 
         if rec["grading"] == "manual":
             # t14 / t15 have no correct answer. Record behaviour, not a boolean.
